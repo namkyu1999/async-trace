@@ -1,0 +1,64 @@
+package main
+
+import (
+	"context"
+	"runtime"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+	"github.com/kelseyhightower/envconfig"
+	"github.com/namkyu1999/async-trace/parent/pkg/handlers"
+	"github.com/namkyu1999/async-trace/parent/pkg/telemetry"
+	"github.com/namkyu1999/async-trace/parent/pkg/utils"
+	log "github.com/sirupsen/logrus"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
+)
+
+func init() {
+	err := envconfig.Process("", &utils.Config)
+	log.SetReportCaller(true)
+
+	log.Infof("go version: %s", runtime.Version())
+	log.Infof("go os/arch: %s/%s", runtime.GOOS, runtime.GOARCH)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() {
+	// setup tracing
+	ctx := context.Background()
+	shutdown, err := telemetry.InitProvider()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer func() {
+		if err := shutdown(ctx); err != nil {
+			log.Fatal("failed to shutdown TracerProvider: %w", err)
+		}
+	}()
+
+	// setup gin
+	gin.SetMode(gin.ReleaseMode)
+	gin.EnableJsonDecoderDisallowUnknownFields()
+	router := gin.New()
+	router.Use(handlers.LoggingMiddleware())     // logging middleware
+	router.Use(otelgin.Middleware("api-server")) // tracing middleware
+	router.Use(gin.Recovery())
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowHeaders:     []string{"*"},
+		AllowMethods:     []string{"PUT", "GET", "POST", "DELETE"},
+		AllowCredentials: true,
+	}))
+
+	router.GET("/status", handlers.StatusHandler)
+	router.GET("/hello", handlers.GetLogicHandler())
+	router.GET("/child-process", handlers.CreateChildProcessHandler())
+
+	err = router.Run(":" + utils.Config.HttpPort)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
