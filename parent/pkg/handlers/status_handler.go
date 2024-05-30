@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/namkyu1999/async-trace/parent/pkg/utils"
 )
 
 type APIStatus struct {
@@ -17,9 +16,12 @@ func StatusHandler(c *gin.Context) {
 	var status = APIStatus{Status: "up"}
 	statusByte, err := json.Marshal(status)
 	if err != nil {
-		utils.WriteHeaders(&c.Writer, http.StatusInternalServerError)
+		c.Writer.WriteHeader(http.StatusInternalServerError)
 		return
 	}
-	utils.WriteHeaders(&c.Writer, http.StatusOK)
+	c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+	c.Writer.Header().Set("Content-Type", "application/json; charset=utf-8")
+	c.Writer.WriteHeader(http.StatusOK)
+
 	c.Writer.Write(statusByte)
 }

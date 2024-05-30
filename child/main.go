@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"time"
 
@@ -13,75 +14,89 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
-	"google.golang.org/grpc"
 )
 
-func initProvider() func() {
-	ctx := context.Background()
-
-	res, err := resource.New(ctx,
-		resource.WithFromEnv(),
-		resource.WithProcess(),
-		resource.WithTelemetrySDK(),
-		resource.WithHost(),
-		resource.WithAttributes(
-			// the service name used to display traces in backends
-			semconv.ServiceNameKey.String("child-process"),
+// reference: https://github.com/wavefrontHQ/opentelemetry-examples/tree/master/go-example/manual-instrumentation
+func initTracer() (*sdktrace.TracerProvider, error) {
+	endpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	// Set up a trace exporter
+	traceExporter, err := otlptrace.New(
+		context.Background(),
+		otlptracegrpc.NewClient(
+			otlptracegrpc.WithInsecure(),
+			otlptracegrpc.WithEndpoint(endpoint),
 		),
 	)
-	handleErr(err, "failed to create resource")
+	reportErr(err, "failed to create trace exporter")
 
-	otelAgentAddr, ok := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
-	if !ok {
-		otelAgentAddr = "otel-collector.observability.svc.cluster.local:4317"
-	}
+	// Register the trace exporter with a TracerProvider, using a batch
+	// span processor to aggregate spans before export.
+	batchSpanProcessor := sdktrace.NewBatchSpanProcessor(traceExporter)
+	tp := newTraceProvider(resource.NewWithAttributes(semconv.SchemaURL, semconv.ServiceNameKey.String("childservice")), batchSpanProcessor)
+	otel.SetTracerProvider(tp)
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
-	traceClient := otlptracegrpc.NewClient(
-		otlptracegrpc.WithInsecure(),
-		otlptracegrpc.WithEndpoint(otelAgentAddr),
-		otlptracegrpc.WithDialOption(grpc.WithBlock()))
-	sctx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	traceExp, err := otlptrace.New(sctx, traceClient)
-	handleErr(err, "Failed to create the collector trace exporter")
+	return tp, nil
+}
 
-	bsp := sdktrace.NewBatchSpanProcessor(traceExp)
+func newTraceProvider(res *resource.Resource, bsp sdktrace.SpanProcessor) *sdktrace.TracerProvider {
 	tracerProvider := sdktrace.NewTracerProvider(
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithResource(res),
 		sdktrace.WithSpanProcessor(bsp),
 	)
-
-	// set global propagator to tracecontext (the default is no-op).
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
-	otel.SetTracerProvider(tracerProvider)
-
-	return func() {
-		cxt, cancel := context.WithTimeout(ctx, time.Second)
-		defer cancel()
-		if err := traceExp.Shutdown(cxt); err != nil {
-			otel.Handle(err)
-		}
-	}
+	return tracerProvider
 }
 
-func handleErr(err error, message string) {
+func reportErr(err error, message string) {
 	if err != nil {
-		log.Fatalf("%s: %v", message, err)
+		log.Printf("%s: %v", message, err)
 	}
 }
 
 func main() {
-	shutdown := initProvider()
-	ctx := context.Background()
-	defer shutdown()
+	tp, err := initTracer()
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := tp.Shutdown(context.Background()); err != nil {
+			panic(err)
+		}
+	}()
 
-	tracer := otel.Tracer("child-process-tracer")
+	traceParent := os.Getenv("TRACE_PARENT")
 
-	_, span := tracer.Start(ctx, "Execute Something")
+	pro := otel.GetTextMapPropagator()
+	carrier := make(map[string]string)
+	if err := json.Unmarshal([]byte(traceParent), &carrier); err != nil {
+		log.Fatal(err)
+	}
 
-	time.Sleep(time.Duration(2) * time.Minute)
+	parentContext := pro.Extract(context.Background(), propagation.MapCarrier(carrier))
 
-	span.End()
+	// work begins
+	parentFunction(parentContext)
+
 	log.Info("Child process finished")
+}
+
+func parentFunction(parentContext context.Context) {
+	ctx, parentSpan := otel.Tracer("childTracer").Start(parentContext, "childservice-span1")
+
+	log.Printf("In parent span, before calling a child function.")
+	defer parentSpan.End()
+	time.Sleep(2 * time.Second)
+
+	childFunction(ctx)
+
+	log.Printf("In parent span, after calling a child function. When this function ends, parentSpan will complete.")
+}
+
+func childFunction(parentContext context.Context) {
+	_, childSpan := otel.Tracer("childTracer2").Start(parentContext, "childservice-span2")
+	defer childSpan.End()
+	time.Sleep(2 * time.Second)
+
+	log.Printf("In child span, when this function returns, childSpan will complete.")
 }

@@ -1,8 +1,9 @@
 package utils
 
 type Configurations struct {
-	HttpPort                 string `split_words:"true" default:"8080"`
-	OtelExporterOtlpEndpoint string `split_words:"true" default:"otel-collector.observability.svc.cluster.local:4317"`
+	ParentServicePort        string `split_words:"true" default:"8080"`
+	OtelExporterOtlpEndpoint string `split_words:"true"`
+	OtelServiceName          string `split_words:"true" default:"parentservice"`
 }
 
 var Config Configurations
