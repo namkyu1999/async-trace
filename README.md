@@ -1,5 +1,9 @@
 # Asynchronous tracing
 
+## Diagram
+![docker](https://github.com/namkyu1999/async-trace/assets/53862866/bd5d71b6-c014-4e51-ae47-cfb4203f8870)
+
+
 ## Result
 <img width="1512" alt="Screenshot 2024-05-30 at 10 38 58 AM" src="https://github.com/namkyu1999/async-trace/assets/53862866/3d17aa84-a5ea-4979-a404-d7cbe1e4cf79">
 
